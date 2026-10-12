@@ -166,6 +166,8 @@ def gemini_enhance(
     reference_paths: List[Path],
     out_path: Path,
     temperature: float = 0.0,
+    top_p: float = 0.1,
+    top_k: int = 8,
     match_size_to: Optional[Path] = None,
 ) -> Path:
     key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
@@ -188,7 +190,11 @@ def gemini_enhance(
         "contents": [{"role": "user", "parts": parts}],
         "generationConfig": {
             "responseModalities": ["TEXT", "IMAGE"],
+            # Low creative freedom: deterministic, narrow sampling for survey fidelity.
             "temperature": temperature,
+            "topP": top_p,
+            "topK": top_k,
+            "candidateCount": 1,
         },
     }
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -248,19 +254,20 @@ GOALS:
 1) Sharpen & clarify what is ALREADY in Image 1 — the live map viewport screenshot (dehaze, denoise, deblur).
 2) Add REALISTIC MICRO-DETAIL only on surfaces/objects that already exist (leaves on existing canopy,
    asphalt grit on existing pavement, roofing texture on existing roofs, paint/glass edges on existing cars).
-3) NEVER invent new objects or infrastructure. Prefer under-enhancement over hallucination.
+3) NEVER invent new objects or infrastructure — but DO make existing content look crisp and detailed.
 
 ALLOWED DETAIL (only where the object/surface is already visible in Image 1):
-- Existing trees/vegetation: leaf-mass texture, canopy edge crispness, internal canopy variation — do not grow new trees or place plants in empty road/yard.
-- Existing roads/pavement/dirt: fine surface grain / wear on that same surface — do not invent sidewalks, curbs, stall grids, or lane paint that are not clearly there.
-- Existing roofs/buildings: tile/metal/ridge texture and sharper outlines — same footprint.
-- Existing cars: sharper body/window/shadow boundaries — same count and positions.
+- Existing trees/vegetation: clear leaf-mass texture, crisp canopy edges, internal canopy variation — do not grow new trees or place plants in empty road/yard.
+- Existing roads/pavement/dirt: visible surface grain / wear on that same surface — do not invent sidewalks, curbs, stall grids, or lane paint that are not clearly there.
+- Existing roofs/buildings: clear tile/metal/ridge texture and sharper outlines — same footprint.
+- Existing cars: sharp body/window/shadow boundaries — same count, positions, and colors only.
+- Overall: output should look clearly sharper and more detailed than Image 1, not nearly identical.
 
 FORBIDDEN (survey failures):
 - New buildings, roofs, roads, sidewalks, parking stalls, lane markings, fences, people, or vehicles.
-- Turning ambiguous blur blobs into trees/bushes/objects (especially in the middle of streets/lots).
+- Adding cars/trucks/motorbikes onto empty road or parking areas.
+- Turning ambiguous empty blur into trees/bushes/cars (especially in the middle of streets/lots).
 - Moving, removing, or redesigning layout. No rotate / warp / reframe.
-- If unsure a feature exists → leave it soft; do not invent.
 
 SOURCE IMAGE METADATA (must preserve):
 - Source: browser map canvas screenshot (same pixels the user sees)
@@ -467,10 +474,15 @@ STRUCTURE GUIDE (mandatory — survey / no hallucination):
 - Image 1 = VIEWPORT SCREENSHOT of the live map canvas (exact pixels on screen). ONLY source of truth.
 - {guide_blurb}
 - Align roofs, roads, cars, tree canopies to Image 1 + Image 2 exactly.
-- Sharpen / dehaze / add micro-detail ONLY on surfaces already visible in Image 1.
-- FORBIDDEN: inventing buildings, roads, sidewalks, cars, trees, markings, pavement lines, or any object not clearly in Image 1.
-- Ambiguous blur stays ambiguous — never promote a blotch into a new object.
-- Do not change geometry, footprints, road centerlines, or object counts.
+- Be visibly sharper than Image 1: strong dehaze, deblur, and crisp edges on EXISTING content.
+- Add rich micro-detail on surfaces that already exist (leaf texture in canopy, asphalt grit,
+  roof material, car body/window edges) — make them look high-resolution, not soft web tiles.
+- VEHICLES: keep EXACTLY the same cars/trucks as Image 1 — same count, positions, colors, sizes.
+  Do NOT add cars on empty road, do NOT complete half-visible blobs into cars, do NOT move cars.
+  Empty asphalt stays empty asphalt.
+- FORBIDDEN: inventing NEW buildings, roads, sidewalks, cars, trees, markings, or objects
+  that are not already visible in Image 1. Same footprints, same object counts, same layout.
+- Ambiguous empty blur (e.g. blank road middle) stays empty — do not plant new objects there.
 - Match Image 1 framing, size, and aspect exactly. Output must overlay Image 1 with near-zero misregistration.
 """
     ).strip()
@@ -506,6 +518,7 @@ def lock_enhance_to_mapbox(
     out_path: Path,
     *,
     min_ncc: float = 0.88,
+    creative_freedom: str = "low",
 ) -> tuple[Path, float, str]:
     """Survey-safe sharpen: Mapbox geometry + gated high-frequency clarity.
 
@@ -514,6 +527,10 @@ def lock_enhance_to_mapbox(
     2. Boost Mapbox's own edges (makes existing car blobs crisper).
     3. Add Gemini high-pass detail only where local gradients agree with Mapbox
        (asphalt/tree/car micro-texture without inventing new buildings).
+
+    creative_freedom:
+      - "low" (default): prefer source structure; Gemini only a light clarity pass
+      - "med": prior balanced lock (more Gemini mid/high when NCC is high)
     """
     from PIL import ImageFilter
     import numpy as np
@@ -544,14 +561,38 @@ def lock_enhance_to_mapbox(
     edge_s = np.sqrt(gsx * gsx + gsy * gsy)
     edge_c = np.sqrt(gcx * gcx + gcy * gcy)
     edge_s_n = edge_s / (np.percentile(edge_s, 90) + 1e-6)
-    edge_c_n = edge_c / (np.percentile(edge_c, 90) + 1e-6)
-    gate = np.clip(0.35 + 0.65 * agree * np.clip(np.maximum(edge_s_n, edge_c_n), 0, 1), 0.35, 1.0)
+    # Gate on SOURCE edges only — never on Gemini edges.
+    # Otherwise invented cars (strong Gemini edges on empty road) pass the gate.
+    src_edge = np.clip(edge_s_n, 0, 1)
+    if (creative_freedom or "low").lower() == "low":
+        gate = np.clip(0.10 + 0.80 * (agree ** 1.5) * src_edge, 0.05, 0.80)
+    else:
+        # Balanced: allow more Gemini detail on real structure, near-zero on empty road.
+        gate = np.clip(0.05 + 0.95 * (agree ** 1.2) * src_edge, 0.02, 1.0)
     gate = gate[..., None].astype(np.float32)
 
+    freedom = (creative_freedom or "low").lower()
     # When Gemini already matches Mapbox closely (edge-guided runs often ~0.95+),
     # only keep VERY coarse layout from Mapbox and let Gemini supply mid+high
     # detail — otherwise the lock re-blurs everything back to soft web tiles.
-    if ncc >= 0.93:
+    # "low" keeps more source HF and dials Gemini down (survey preference).
+    if freedom == "low":
+        if ncc >= 0.93:
+            radius = 4.0
+            mb_gain, ge_gain = 0.90, 0.45
+            mode = "low_freedom:src_structure+light_gemini"
+            unsharp = (1.1, 120)
+        elif ncc >= max(min_ncc, 0.90):
+            radius = 3.0
+            mb_gain, ge_gain = 1.05, 0.35
+            mode = "low_freedom:src_dominant+weak_gemini"
+            unsharp = (1.3, 140)
+        else:
+            radius = 2.5
+            mb_gain, ge_gain = 1.20, 0.20
+            mode = "low_freedom:src_almost_only"
+            unsharp = (1.4, 150)
+    elif ncc >= 0.93:
         radius = 7.0
         mb_gain, ge_gain = 0.35, 1.05
         mode = "mapbox_coarse+gemini_detail_hi_ncc"

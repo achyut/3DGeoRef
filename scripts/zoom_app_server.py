@@ -257,11 +257,17 @@ class Handler(BaseHTTPRequestHandler):
                     prompt=prompt,
                     reference_paths=[raw_path, edges_path],
                     out_path=gemini_raw,
-                    temperature=0.0,
+                    temperature=0.2,
+                    top_p=0.85,
+                    top_k=32,
                     match_size_to=raw_path,
                 )
                 locked, ncc, mode = lock_enhance_to_mapbox(
-                    raw_path, gemini_raw, enh_path, min_ncc=0.88
+                    raw_path,
+                    gemini_raw,
+                    enh_path,
+                    min_ncc=0.88,
+                    creative_freedom="med",
                 )
                 mode = f"viewport+edges_fine→{mode}"
             except Exception as gemini_exc:
@@ -289,6 +295,7 @@ class Handler(BaseHTTPRequestHandler):
                 "detail_hf": detail_hf,
                 "client_zoom": client_zoom,
                 "guide": "edges_fine",
+                "creative_freedom": "med",
             },
             "align": {"ncc": ncc, "mode": mode},
             "chained": False,

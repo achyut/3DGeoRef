@@ -108,7 +108,7 @@
       Enhance captures a <strong>screenshot of the current map canvas</strong>, builds fine edges,
       then Gemini sharpens without inventing objects. Use opacity to compare vs the basemap.
     </p>
-    <span class="badge">canvas screenshot · fine edges · no invent · survey lock</span>
+    <span class="badge">balanced detail · canvas shot · fine edges · no invent</span>
 
     <label>Basemap</label>
     <select id="basemap">
@@ -354,7 +354,7 @@
       setStatus("Capturing map canvas…");
       try {
         const viewport_image = await captureMapCanvas();
-        setStatus("Enhancing screenshot: fine edges → Gemini (no invent) → lock…");
+        setStatus("Enhancing (balanced): fine edges → Gemini detail → structure lock…");
         const payload = { ...viewportPayload(), viewport_image };
         const res = await fetch("/api/enhance", {
           method: "POST",
