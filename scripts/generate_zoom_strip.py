@@ -488,6 +488,93 @@ STRUCTURE GUIDE (mandatory — survey / no hallucination):
     ).strip()
 
 
+# Flat-color semantic palette for viewport segmentation overlays (RGB).
+SEGMENT_CLASSES = [
+    ("road", (128, 128, 128), "roads / pavement / parking asphalt"),
+    ("building", (229, 57, 53), "buildings / roofs"),
+    ("vehicle", (255, 235, 59), "cars / trucks / buses"),
+    ("tree", (67, 160, 71), "trees / dense canopy"),
+    ("grass", (174, 213, 129), "grass / fields / open vegetation"),
+    ("water", (30, 136, 229), "water / rivers / ponds"),
+    ("bare", (141, 110, 99), "bare soil / dirt / construction"),
+    ("other", (94, 53, 177), "other / uncertain"),
+]
+
+
+def build_segment_prompt(
+    *,
+    west: float,
+    south: float,
+    east: float,
+    north: float,
+    meters_hint: str,
+    image_width: int,
+    image_height: int,
+) -> str:
+    """Prompt: flat-color semantic map locked to viewport screenshot contents."""
+    legend = "\n".join(
+        f"- {name}: RGB{rgb} — {desc}" for name, rgb, desc in SEGMENT_CLASSES
+    )
+    return f"""
+TASK: Produce a FLAT-COLOR SEMANTIC SEGMENTATION map of the attached orthophoto.
+This is LABELING existing pixels — NOT enhancing, NOT inventing objects.
+
+RULES:
+1) Image 1 is the ONLY source of truth (viewport screenshot). Segment what is visible.
+2) Output MUST be the same size, framing, and aspect as Image 1 ({image_width}x{image_height}).
+3) Each pixel is ONE solid class color from the legend — no textures, no text, no legend drawn on the image.
+4) Do NOT add vehicles, buildings, or roads that are not clearly present in Image 1.
+5) Empty / ambiguous areas → "other". Prefer under-segmentation over guessing cars on empty road.
+6) Keep object footprints aligned with Image 1 (near-zero misregistration if overlaid).
+
+CLASS LEGEND (exact RGB):
+{legend}
+
+Coverage WGS84 bbox [west,south,east,north]: [{west:.8f}, {south:.8f}, {east:.8f}, {north:.8f}]
+Ground coverage: {meters_hint}
+
+Return a single flat-color segmentation image only.
+""".strip()
+
+
+def quantize_to_segment_palette(src_path: Path, out_path: Path) -> Path:
+    """Snap Gemini colors to nearest SEGMENT_CLASSES RGB for a clean legend."""
+    import numpy as np
+
+    img = Image.open(src_path).convert("RGB")
+    arr = np.asarray(img, dtype=np.float32)
+    palette = np.array([rgb for _, rgb, _ in SEGMENT_CLASSES], dtype=np.float32)
+    flat = arr.reshape(-1, 3)
+    # Nearest palette color (squared Euclidean).
+    d = ((flat[:, None, :] - palette[None, :, :]) ** 2).sum(axis=2)
+    idx = d.argmin(axis=1)
+    out = palette[idx].reshape(arr.shape).astype(np.uint8)
+    Image.fromarray(out, mode="RGB").save(out_path)
+    return out_path
+
+
+def blend_segment_overlay(
+    viewport_path: Path,
+    seg_path: Path,
+    out_path: Path,
+    *,
+    alpha: float = 0.55,
+) -> Path:
+    """Tinted overlay: keep viewport visible under translucent class colors."""
+    import numpy as np
+
+    base = Image.open(viewport_path).convert("RGB")
+    seg = Image.open(seg_path).convert("RGB")
+    if seg.size != base.size:
+        seg = seg.resize(base.size, Image.Resampling.NEAREST)
+    ba = np.asarray(base, dtype=np.float32)
+    sa = np.asarray(seg, dtype=np.float32)
+    a = float(np.clip(alpha, 0.0, 1.0))
+    out = (ba * (1.0 - a) + sa * a).clip(0, 255).astype(np.uint8)
+    Image.fromarray(out, mode="RGB").save(out_path)
+    return out_path
+
+
 def sharpen_mapbox(mapbox_path: Path, out_path: Path, *, scale: int = 2) -> Path:
     """Geometry-perfect enhance: bicubic upscale → unsharp → bicubic downscale.
 

@@ -28,14 +28,18 @@ LATEST_PATH = OUT_DIR / "latest.json"
 sys.path.insert(0, str(SCRIPTS))
 
 from generate_zoom_strip import (  # noqa: E402
+    SEGMENT_CLASSES,
     approx_meters,
+    blend_segment_overlay,
     build_edge_guided_prompt,
+    build_segment_prompt,
     download_mapbox,
     gemini_enhance,
     load_env,
     lock_enhance_to_mapbox,
     estimate_detail_energy,
     make_structure_edges,
+    quantize_to_segment_palette,
     sharpen_mapbox,
     mapbox_pixel_size,
 )
@@ -164,6 +168,8 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/enhance":
             return self._enhance()
+        if parsed.path == "/api/segment":
+            return self._segment()
         if parsed.path == "/api/zoom-strip":
             return self._zoom_strip()
         if parsed.path == "/api/latest/clear":
@@ -217,19 +223,10 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             # Prefer live map canvas screenshot from the browser (exact pixels on screen).
-            viewport_b64 = data.get("viewport_image") or data.get("screenshot")
-            if not viewport_b64:
-                return self._send_json(
-                    400,
-                    {"error": "viewport_image required (screenshot of current map canvas)"},
-                )
-            if "," in viewport_b64:
-                viewport_b64 = viewport_b64.split(",", 1)[1]
-            raw_path.write_bytes(base64.b64decode(viewport_b64))
-            with Image.open(raw_path) as im:
-                rgb = im.convert("RGB")
-                iw, ih = rgb.size
-                rgb.save(raw_path, format="JPEG", quality=92)
+            try:
+                iw, ih = self._save_viewport_jpeg(data, raw_path)
+            except ValueError as ve:
+                return self._send_json(400, {"error": str(ve)})
 
             detail_hf = estimate_detail_energy(raw_path)
             # Fine edges from the screenshot → Gemini(viewport + edges) → lock to screenshot.
@@ -299,6 +296,95 @@ class Handler(BaseHTTPRequestHandler):
             },
             "align": {"ncc": ncc, "mode": mode},
             "chained": False,
+            "saved_at": time.time(),
+        }
+        LATEST_PATH.write_text(json.dumps(result, indent=2))
+        return self._send_json(200, result)
+
+    def _save_viewport_jpeg(self, data: dict, raw_path: Path) -> tuple[int, int]:
+        viewport_b64 = data.get("viewport_image") or data.get("screenshot")
+        if not viewport_b64:
+            raise ValueError("viewport_image required (screenshot of current map canvas)")
+        if "," in viewport_b64:
+            viewport_b64 = viewport_b64.split(",", 1)[1]
+        raw_path.write_bytes(base64.b64decode(viewport_b64))
+        with Image.open(raw_path) as im:
+            rgb = im.convert("RGB")
+            iw, ih = rgb.size
+            rgb.save(raw_path, format="JPEG", quality=92)
+        return iw, ih
+
+    def _segment(self) -> None:
+        """Semantic color map from the live viewport screenshot (Gemini flat labels)."""
+        try:
+            data = self._read_json()
+            west, south, east, north = self._parse_bbox(data)
+        except Exception as exc:
+            return self._send_json(400, {"error": f"bad request: {exc}"})
+
+        OUT_DIR.mkdir(parents=True, exist_ok=True)
+        job = uuid.uuid4().hex[:10]
+        raw_path = OUT_DIR / f"{job}_viewport.jpg"
+        seg_raw = OUT_DIR / f"{job}_seg_raw.png"
+        seg_path = OUT_DIR / f"{job}_segment.png"
+        blend_path = OUT_DIR / f"{job}_segment_blend.png"
+
+        center = data.get("center") or {
+            "lon": (west + east) / 2.0,
+            "lat": (south + north) / 2.0,
+        }
+        client_zoom = float(data.get("zoom") or 0.0)
+        meters = approx_meters(west, south, east, north)
+
+        try:
+            iw, ih = self._save_viewport_jpeg(data, raw_path)
+            prompt = build_segment_prompt(
+                west=west,
+                south=south,
+                east=east,
+                north=north,
+                meters_hint=meters,
+                image_width=iw,
+                image_height=ih,
+            )
+            (OUT_DIR / f"{job}_seg_prompt.txt").write_text(prompt)
+            model = os.environ.get("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image")
+            gemini_enhance(
+                model=model,
+                prompt=prompt,
+                reference_paths=[raw_path],
+                out_path=seg_raw,
+                temperature=0.1,
+                top_p=0.3,
+                top_k=16,
+                match_size_to=raw_path,
+            )
+            quantize_to_segment_palette(seg_raw, seg_path)
+            blend_segment_overlay(raw_path, seg_path, blend_path, alpha=0.55)
+        except Exception as exc:
+            return self._send_json(500, {"error": str(exc)})
+
+        legend = [
+            {"name": name, "rgb": list(rgb), "description": desc}
+            for name, rgb, desc in SEGMENT_CLASSES
+        ]
+        result = {
+            "ok": True,
+            "kind": "segment",
+            "bbox": [west, south, east, north],
+            "center": center,
+            "meters": meters,
+            "original_url": f"/outputs/{raw_path.name}",
+            "segment_url": f"/outputs/{seg_path.name}",
+            "enhanced_url": f"/outputs/{blend_path.name}",
+            "prompt_url": f"/outputs/{job}_seg_prompt.txt",
+            "legend": legend,
+            "source": {
+                "provider": "map_viewport_screenshot",
+                "view": "browser canvas capture",
+                "client_zoom": client_zoom,
+                "method": "gemini_flat_color+palette_quantize",
+            },
             "saved_at": time.time(),
         }
         LATEST_PATH.write_text(json.dumps(result, indent=2))

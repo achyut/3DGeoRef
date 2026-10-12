@@ -84,6 +84,22 @@
     }
     .preview img { width: 100%; display: block; }
     .preview .cap { font-size: 0.75rem; color: var(--muted); padding: 8px; background: #0f141a; }
+    .legend {
+      margin-top: 10px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px 8px;
+      font-size: 0.72rem;
+      color: var(--muted);
+    }
+    .legend .swatch {
+      display: inline-block;
+      width: 10px; height: 10px;
+      border-radius: 2px;
+      margin-right: 5px;
+      vertical-align: -1px;
+      border: 1px solid rgba(255,255,255,0.25);
+    }
     .center-cross {
       position: absolute; left: 50%; top: 50%; width: 22px; height: 22px;
       margin: -11px 0 0 -11px; pointer-events: none; z-index: 500;
@@ -140,16 +156,19 @@
     </div>
 
     <button id="enhance" class="ok">Enhance</button>
+    <button id="segment">Segment</button>
     <button id="toggleOverlay" class="secondary" disabled>Hide overlay</button>
     <button id="clearOverlay" class="secondary">Clear overlay</button>
 
     <div id="status" class="status"></div>
+    <div id="legend" class="legend" hidden></div>
     <div class="preview">
       <img id="lastEnhanced" alt="" />
-      <div class="cap" id="previewCap">Enhanced result appears here</div>
+      <div class="cap" id="previewCap">Enhanced / segmented result appears here</div>
     </div>
     <p class="hint">
-      Pan/zoom freely, then hit <strong>Enhance</strong>. Use opacity to A/B against the live basemap.
+      <strong>Enhance</strong> sharpens the canvas shot. <strong>Segment</strong> labels roads,
+      buildings, cars, grass, etc. Use opacity to compare with the basemap.
     </p>
   </aside>
   <div class="map-wrap">
@@ -272,25 +291,45 @@
     map.on("moveend zoomend", refreshReadout);
     refreshReadout();
 
-    function applyEnhanced(data, { statusMsg = null } = {}) {
+    function renderLegend(legend) {
+      const el = document.getElementById("legend");
+      if (!legend || !legend.length) {
+        el.hidden = true;
+        el.innerHTML = "";
+        return;
+      }
+      el.hidden = false;
+      el.innerHTML = legend
+        .map((c) => {
+          const rgb = `rgb(${c.rgb.join(",")})`;
+          return `<span><i class="swatch" style="background:${rgb}"></i>${c.name}</span>`;
+        })
+        .join("");
+    }
+
+    function applyEnhanced(data, { statusMsg = null, kind = "enhance" } = {}) {
       const bounds = L.latLngBounds(
         [data.bbox[1], data.bbox[0]],
         [data.bbox[3], data.bbox[2]]
       );
+      const overlayUrl = data.enhanced_url || data.segment_url;
       lastEnhanced = {
-        enhancedUrl: data.enhanced_url,
+        enhancedUrl: overlayUrl,
         originalUrl: data.original_url,
         bbox: data.bbox,
         bounds,
         align: data.align || null,
+        kind: data.kind || kind,
       };
       document.getElementById("lastEnhanced").src =
-        data.enhanced_url + (data.enhanced_url.includes("?") ? "&" : "?") + "t=" + Date.now();
+        overlayUrl + (overlayUrl.includes("?") ? "&" : "?") + "t=" + Date.now();
       const alignTxt = data.align
         ? ` · ${data.align.mode} (ncc=${Number(data.align.ncc || 0).toFixed(2)})`
         : "";
+      const label = (data.kind || kind) === "segment" ? "Segmented" : "Enhanced";
       document.getElementById("previewCap").textContent =
-        `Enhanced · ${data.meters || ""}${alignTxt}`;
+        `${label} · ${data.meters || ""}${alignTxt}`;
+      renderLegend(data.legend);
 
       // Keep current view; overlay registers on the enhanced footprint for opacity compare.
       showOverlay();
@@ -348,15 +387,14 @@
       }
     }
 
-    document.getElementById("enhance").onclick = async () => {
-      const btn = document.getElementById("enhance");
-      btn.disabled = true;
+    async function runViewportJob(apiPath, { busyBtns, progressMsg, doneMsg, kind }) {
+      busyBtns.forEach((b) => (b.disabled = true));
       setStatus("Capturing map canvas…");
       try {
         const viewport_image = await captureMapCanvas();
-        setStatus("Enhancing (balanced): fine edges → Gemini detail → structure lock…");
+        setStatus(progressMsg);
         const payload = { ...viewportPayload(), viewport_image };
-        const res = await fetch("/api/enhance", {
+        const res = await fetch(apiPath, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
@@ -364,22 +402,43 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || res.statusText);
         applyEnhanced(data, {
-          statusMsg: `Enhanced from canvas screenshot (${data.meters}). Slide opacity to compare.`,
+          statusMsg: doneMsg(data),
+          kind,
         });
       } catch (err) {
         setStatus(String(err.message || err), "err");
       } finally {
-        btn.disabled = false;
+        busyBtns.forEach((b) => (b.disabled = false));
         refreshReadout();
       }
-    };
+    }
+
+    const enhanceBtn = document.getElementById("enhance");
+    const segmentBtn = document.getElementById("segment");
+
+    enhanceBtn.onclick = () =>
+      runViewportJob("/api/enhance", {
+        busyBtns: [enhanceBtn, segmentBtn],
+        progressMsg: "Enhancing (balanced): fine edges → Gemini detail → structure lock…",
+        doneMsg: (d) => `Enhanced from canvas screenshot (${d.meters}). Slide opacity to compare.`,
+        kind: "enhance",
+      });
+
+    segmentBtn.onclick = () =>
+      runViewportJob("/api/segment", {
+        busyBtns: [enhanceBtn, segmentBtn],
+        progressMsg: "Segmenting canvas: roads / buildings / cars / grass…",
+        doneMsg: (d) => `Segmented (${d.meters}). Opacity blends labels over basemap.`,
+        kind: "segment",
+      });
 
     document.getElementById("clearOverlay").onclick = async () => {
       hideOverlay();
       lastEnhanced = null;
       syncToggleButton();
       document.getElementById("lastEnhanced").removeAttribute("src");
-      document.getElementById("previewCap").textContent = "Enhanced result appears here";
+      document.getElementById("previewCap").textContent = "Enhanced / segmented result appears here";
+      renderLegend(null);
       try {
         await fetch("/api/latest/clear", { method: "POST" });
       } catch (_) { /* ignore */ }
