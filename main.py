@@ -38,19 +38,21 @@ def parse_args():
     parser.add_argument(
         "--geoloc_model",
         type=str,
-        choices=["geoclip", "ollama", "gemini"],
+        choices=["geoclip", "ollama", "gemini", "openrouter", "vercel"],
         default="gemini",
         help="Model to use for geolocation: "
             "'geoclip' = use GeoCLIP model, "
             "'ollama' = use Ollama AI model, "
-            "'gemini' = use Gemini AI model (default)"
+            "'gemini' = use Gemini AI model (default), "
+            "'openrouter' = use OpenRouter vision models, "
+            "'vercel' = use Vercel AI Gateway"
     )
 
     parser.add_argument(
         "--gemini_model",
         type=str,
-        default="gemini-3.1-flash-lite-preview",
-        help="Gemini model version to use (e.g., 'gemini-3-flash', 'gemini-2.5-flash' ...)."
+        default=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"),
+        help="Gemini model version to use (e.g., 'gemini-2.5-flash', 'gemini-2.5-flash-lite' ...)."
     )
 
     parser.add_argument(
@@ -58,6 +60,34 @@ def parse_args():
         type=str,
         default=None,
         help="API Key for Google Gemini (can also be set via GEMINI_API_KEY environment variable)."
+    )
+
+    parser.add_argument(
+        "--openrouter_api_key",
+        type=str,
+        default=None,
+        help="API Key for OpenRouter (can also be set via OPENROUTER_API_KEY environment variable)."
+    )
+
+    parser.add_argument(
+        "--openrouter_model",
+        type=str,
+        default="google/gemini-2.5-flash",
+        help="OpenRouter model id (default: google/gemini-2.5-flash)."
+    )
+
+    parser.add_argument(
+        "--ai_gateway_api_key",
+        type=str,
+        default=None,
+        help="API Key for Vercel AI Gateway (can also be set via AI_GATEWAY_API_KEY environment variable)."
+    )
+
+    parser.add_argument(
+        "--ai_gateway_model",
+        type=str,
+        default="openai/gpt-4o-mini",
+        help="Vercel AI Gateway model id (default: openai/gpt-4o-mini)."
     )
 
     parser.add_argument(

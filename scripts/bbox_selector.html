@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Satellite Enhance</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    :root {
+      --bg: #101418;
+      --panel: #1a2129;
+      --text: #e8eef4;
+      --muted: #9aa7b5;
+      --accent: #3d8bfd;
+      --ok: #2f9e44;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      height: 100vh;
+    }
+    aside {
+      padding: 18px;
+      background: var(--panel);
+      border-right: 1px solid #2a3440;
+      overflow: auto;
+    }
+    h1 { font-size: 1.1rem; margin: 0 0 6px; }
+    p { color: var(--muted); font-size: 0.88rem; line-height: 1.4; margin: 0 0 10px; }
+    #map { width: 100%; height: 100%; background: #000; }
+    label { display: block; font-size: 0.72rem; color: var(--muted); margin-top: 10px; }
+    input, button, select {
+      width: 100%;
+      margin-top: 4px;
+      border-radius: 8px;
+      border: 1px solid #334155;
+      background: #0f141a;
+      color: var(--text);
+      padding: 10px 12px;
+      font: inherit;
+    }
+    input[type="range"] {
+      padding: 8px 0;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    button {
+      cursor: pointer;
+      background: var(--accent);
+      border: none;
+      font-weight: 600;
+      margin-top: 10px;
+    }
+    button.secondary { background: #334155; }
+    button.ok { background: var(--ok); }
+    button:disabled { opacity: 0.55; cursor: wait; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .hint { font-size: 0.78rem; color: var(--muted); margin-top: 12px; }
+    .badge {
+      display: inline-block;
+      background: rgba(61, 139, 253, 0.15);
+      color: #74c0fc;
+      border: 1px solid rgba(61, 139, 253, 0.4);
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 0.72rem;
+      margin-bottom: 8px;
+    }
+    .status { font-size: 0.8rem; margin-top: 8px; color: var(--muted); min-height: 1.2em; }
+    .status.err { color: #ffa8a8; }
+    .status.ok { color: #8ce99a; }
+    .preview {
+      margin-top: 12px;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #000;
+      min-height: 120px;
+    }
+    .preview img { width: 100%; display: block; }
+    .preview .cap { font-size: 0.75rem; color: var(--muted); padding: 8px; background: #0f141a; }
+    .center-cross {
+      position: absolute; left: 50%; top: 50%; width: 22px; height: 22px;
+      margin: -11px 0 0 -11px; pointer-events: none; z-index: 500;
+    }
+    .center-cross::before, .center-cross::after {
+      content: ""; position: absolute; background: rgba(255,255,255,0.9);
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.5);
+    }
+    .center-cross::before { left: 10px; top: 0; width: 2px; height: 22px; }
+    .center-cross::after { left: 0; top: 10px; width: 22px; height: 2px; }
+    .map-wrap { position: relative; }
+    @media (max-width: 900px) {
+      body { grid-template-columns: 1fr; }
+      .map-wrap { min-height: 55vh; }
+    }
+  </style>
+</head>
+<body>
+  <aside>
+    <h1>Viewport enhance</h1>
+    <p>
+      Enhance captures a <strong>screenshot of the current map canvas</strong>, builds fine edges,
+      then Gemini sharpens without inventing objects. Use opacity to compare vs the basemap.
+    </p>
+    <span class="badge">canvas screenshot · fine edges · no invent · survey lock</span>
+
+    <label>Basemap</label>
+    <select id="basemap">
+      <option value="mapbox" selected>Mapbox satellite</option>
+      <option value="esri">Esri World Imagery</option>
+      <option value="osm">OpenStreetMap</option>
+    </select>
+
+    <label>Overlay opacity <span id="opacityVal">70%</span></label>
+    <input id="opacity" type="range" min="0" max="100" value="70" />
+
+    <div class="row">
+      <div>
+        <label>Center lon</label>
+        <input id="clon" readonly />
+      </div>
+      <div>
+        <label>Center lat</label>
+        <input id="clat" readonly />
+      </div>
+      <div>
+        <label>Zoom</label>
+        <input id="zoom" readonly />
+      </div>
+      <div>
+        <label>Approx width</label>
+        <input id="width" readonly />
+      </div>
+    </div>
+
+    <button id="enhance" class="ok">Enhance</button>
+    <button id="toggleOverlay" class="secondary" disabled>Hide overlay</button>
+    <button id="clearOverlay" class="secondary">Clear overlay</button>
+
+    <div id="status" class="status"></div>
+    <div class="preview">
+      <img id="lastEnhanced" alt="" />
+      <div class="cap" id="previewCap">Enhanced result appears here</div>
+    </div>
+    <p class="hint">
+      Pan/zoom freely, then hit <strong>Enhance</strong>. Use opacity to A/B against the live basemap.
+    </p>
+  </aside>
+  <div class="map-wrap">
+    <div id="map"></div>
+    <div class="center-cross" title="View center"></div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  <script>
+    const statusEl = document.getElementById("status");
+    function setStatus(msg, kind = "") {
+      statusEl.textContent = msg || "";
+      statusEl.className = "status" + (kind ? " " + kind : "");
+    }
+
+    const MAPBOX_NATIVE_ZOOM = 18;
+    const map = L.map("map", { maxZoom: 22 }).setView([27.7113, 85.29184], 18);
+
+    const layers = {
+      mapbox: L.tileLayer("/tiles/mapbox/{z}/{x}/{y}.jpg", {
+        maxZoom: 22, maxNativeZoom: MAPBOX_NATIVE_ZOOM, attribution: "&copy; Mapbox",
+        crossOrigin: true,
+      }),
+      esri: L.tileLayer(
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        { maxZoom: 19, attribution: "Tiles &copy; Esri", crossOrigin: true }
+      ),
+      osm: L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19, attribution: "&copy; OpenStreetMap", crossOrigin: true,
+      }),
+    };
+    let active = layers.mapbox.addTo(map);
+    document.getElementById("basemap").onchange = (e) => {
+      map.removeLayer(active);
+      active = layers[e.target.value].addTo(map);
+    };
+
+    let lastEnhanced = null;
+    let overlay = null;
+    let overlayVisible = true;
+
+    function overlayOpacity() {
+      return Number(document.getElementById("opacity").value || 70) / 100;
+    }
+
+    function syncToggleButton() {
+      const btn = document.getElementById("toggleOverlay");
+      btn.disabled = !lastEnhanced;
+      btn.textContent = overlayVisible ? "Hide overlay" : "Show overlay";
+    }
+
+    function showOverlay() {
+      if (!lastEnhanced) return;
+      const baseUrl = lastEnhanced.enhancedUrl;
+      const url = baseUrl + (baseUrl.includes("?") ? "&" : "?") + "t=" + Date.now();
+      if (overlay) map.removeLayer(overlay);
+      overlay = L.imageOverlay(url, lastEnhanced.bounds, {
+        opacity: overlayOpacity(),
+        interactive: false,
+        className: "enhance-overlay",
+      }).addTo(map);
+      overlayVisible = true;
+      syncToggleButton();
+    }
+
+    function hideOverlay() {
+      if (overlay) {
+        map.removeLayer(overlay);
+        overlay = null;
+      }
+      overlayVisible = false;
+      syncToggleButton();
+    }
+
+    document.getElementById("opacity").oninput = (e) => {
+      const pct = Number(e.target.value);
+      document.getElementById("opacityVal").textContent = `${pct}%`;
+      if (overlay) overlay.setOpacity(pct / 100);
+    };
+
+    document.getElementById("toggleOverlay").onclick = () => {
+      if (!lastEnhanced) return;
+      if (overlayVisible) {
+        hideOverlay();
+        setStatus("Basemap only — drag opacity or Show overlay to compare", "ok");
+      } else {
+        showOverlay();
+        setStatus("Enhanced overlay shown", "ok");
+      }
+    };
+
+    function viewportPayload() {
+      const b = map.getBounds();
+      const c = map.getCenter();
+      return {
+        west: b.getWest(),
+        south: b.getSouth(),
+        east: b.getEast(),
+        north: b.getNorth(),
+        bbox: [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()],
+        center: { lon: c.lng, lat: c.lat },
+        zoom: map.getZoom(),
+      };
+    }
+
+    function metersWidth(payload) {
+      const midLat = (payload.south + payload.north) / 2;
+      const mPerDegLon = 111320 * Math.cos((midLat * Math.PI) / 180);
+      return Math.abs(payload.east - payload.west) * mPerDegLon;
+    }
+
+    function refreshReadout() {
+      const p = viewportPayload();
+      document.getElementById("clon").value = p.center.lon.toFixed(6);
+      document.getElementById("clat").value = p.center.lat.toFixed(6);
+      document.getElementById("zoom").value = p.zoom.toFixed(2);
+      document.getElementById("width").value = `~${Math.round(metersWidth(p))} m`;
+    }
+    map.on("moveend zoomend", refreshReadout);
+    refreshReadout();
+
+    function applyEnhanced(data, { statusMsg = null } = {}) {
+      const bounds = L.latLngBounds(
+        [data.bbox[1], data.bbox[0]],
+        [data.bbox[3], data.bbox[2]]
+      );
+      lastEnhanced = {
+        enhancedUrl: data.enhanced_url,
+        originalUrl: data.original_url,
+        bbox: data.bbox,
+        bounds,
+        align: data.align || null,
+      };
+      document.getElementById("lastEnhanced").src =
+        data.enhanced_url + (data.enhanced_url.includes("?") ? "&" : "?") + "t=" + Date.now();
+      const alignTxt = data.align
+        ? ` · ${data.align.mode} (ncc=${Number(data.align.ncc || 0).toFixed(2)})`
+        : "";
+      document.getElementById("previewCap").textContent =
+        `Enhanced · ${data.meters || ""}${alignTxt}`;
+
+      // Keep current view; overlay registers on the enhanced footprint for opacity compare.
+      showOverlay();
+      if (statusMsg) setStatus(statusMsg + alignTxt, "ok");
+      refreshReadout();
+    }
+
+    fetch("/api/health")
+      .then((r) => r.json())
+      .then(async (h) => {
+        if (!h.mapbox) {
+          setStatus("No MAPBOX_API_KEY — switching to Esri", "err");
+          map.removeLayer(active);
+          active = layers.esri.addTo(map);
+          document.getElementById("basemap").value = "esri";
+        } else {
+          setStatus("Ready — Enhance screenshots the map canvas, then sharpens (survey-safe)", "ok");
+        }
+        try {
+          const lr = await fetch("/api/latest");
+          if (lr.ok) {
+            const latest = await lr.json();
+            applyEnhanced(latest, {
+              statusMsg: `Restored last enhancement (${latest.meters})`,
+            });
+          }
+        } catch (_) { /* ignore */ }
+      })
+      .catch(() => setStatus("Start server: python3 scripts/zoom_app_server.py", "err"));
+
+    async function captureMapCanvas() {
+      // Capture the live basemap only (hide UI chrome + any prior enhance overlay).
+      const overlayWasVisible = overlayVisible && overlay;
+      const cross = document.querySelector(".center-cross");
+      const controls = document.querySelector(".leaflet-control-container");
+      if (overlayWasVisible) hideOverlay();
+      if (cross) cross.style.visibility = "hidden";
+      if (controls) controls.style.visibility = "hidden";
+      try {
+        // Wait a frame so tiles/DOM settle after hiding overlay.
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        const mapEl = document.getElementById("map");
+        const canvas = await html2canvas(mapEl, {
+          useCORS: true,
+          allowTaint: false,
+          backgroundColor: "#000",
+          logging: false,
+          scale: 1,
+        });
+        return canvas.toDataURL("image/jpeg", 0.92);
+      } finally {
+        if (cross) cross.style.visibility = "";
+        if (controls) controls.style.visibility = "";
+        if (overlayWasVisible && lastEnhanced) showOverlay();
+      }
+    }
+
+    document.getElementById("enhance").onclick = async () => {
+      const btn = document.getElementById("enhance");
+      btn.disabled = true;
+      setStatus("Capturing map canvas…");
+      try {
+        const viewport_image = await captureMapCanvas();
+        setStatus("Enhancing screenshot: fine edges → Gemini (no invent) → lock…");
+        const payload = { ...viewportPayload(), viewport_image };
+        const res = await fetch("/api/enhance", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        applyEnhanced(data, {
+          statusMsg: `Enhanced from canvas screenshot (${data.meters}). Slide opacity to compare.`,
+        });
+      } catch (err) {
+        setStatus(String(err.message || err), "err");
+      } finally {
+        btn.disabled = false;
+        refreshReadout();
+      }
+    };
+
+    document.getElementById("clearOverlay").onclick = async () => {
+      hideOverlay();
+      lastEnhanced = null;
+      syncToggleButton();
+      document.getElementById("lastEnhanced").removeAttribute("src");
+      document.getElementById("previewCap").textContent = "Enhanced result appears here";
+      try {
+        await fetch("/api/latest/clear", { method: "POST" });
+      } catch (_) { /* ignore */ }
+      setStatus("Cleared overlay", "ok");
+    };
+
+    syncToggleButton();
+  </script>
+</body>
+</html>

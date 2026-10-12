@@ -1,0 +1,21 @@
+# Apple Silicon / Colima override:
+# - No NVIDIA --gpus (CUDA is unavailable on Mac)
+# - Mount local data + live pipeline sources (CPU Blender fallback, MPS-aware DINO)
+# - Drop hard dependency on Ollama for gemini/geoclip runs
+services:
+  python_app:
+    image: 3domfbk/3d-georef:v1.0.0-beta.1
+    platform: linux/amd64
+    container_name: 3dgeoref_python
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - MAPBOX_API_KEY=${MAPBOX_API_KEY:-}
+    volumes:
+      - ./data:/data
+      - ./pipeline:/app/pipeline
+      - ./main.py:/app/main.py
+      - ./hdri:/app/hdri
+    entrypoint: ["python3", "main.py"]
+    restart: "no"
+    profiles: ["run"]

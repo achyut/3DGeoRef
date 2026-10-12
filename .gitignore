@@ -1,6 +1,11 @@
 # Ignore Ollama model folder
 ollama_model/
 
+# Local secrets / env
+.env
+.env.*
+!.env.example
+
 # Ignore all __pycache__ directories
 __pycache__/
 *.pyc
@@ -8,3 +13,9 @@ __pycache__/
 
 # Ignore start script
 distance_calc.py
+
+# Generated / experiment outputs
+data/zoom_strips/
+data/compare_satellite/
+data/output/
+.DS_Store

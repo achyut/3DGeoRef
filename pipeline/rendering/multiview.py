@@ -14,6 +14,50 @@ from mathutils import Matrix, Vector
 HDRI_PATH = "/app/hdri/studio.exr"
 
 
+def _configure_cycles_device(scene):
+    """Prefer GPU (CUDA/OptiX/HIP/Metal) when available; otherwise fall back to CPU.
+
+    Required on Apple Silicon / Colima where the NVIDIA CUDA Docker image has no GPU,
+    and Cycles would fail if hard-coded to GPU.
+    """
+    cycles = scene.cycles
+    prefs = bpy.context.preferences.addons.get("cycles")
+    if prefs is None:
+        cycles.device = "CPU"
+        return
+
+    cprefs = prefs.preferences
+    # Refresh device list; ignore failures on older Blender builds.
+    try:
+        cprefs.get_devices()
+    except Exception:
+        pass
+
+    preferred = ("OPTIX", "CUDA", "HIP", "METAL", "ONEAPI")
+    selected = None
+    for backend in preferred:
+        try:
+            cprefs.compute_device_type = backend
+            try:
+                cprefs.get_devices()
+            except Exception:
+                pass
+            devices = list(getattr(cprefs, "devices", []) or [])
+            gpu_devices = [d for d in devices if getattr(d, "type", None) == backend]
+            if gpu_devices:
+                for d in devices:
+                    d.use = getattr(d, "type", None) == backend
+                selected = backend
+                break
+        except Exception:
+            continue
+
+    if selected:
+        cycles.device = "GPU"
+    else:
+        cycles.device = "CPU"
+
+
 # ===== Function: parse_arguments =====
 def parse_arguments():
     """
@@ -247,10 +291,10 @@ def render_top_ortho_view_from_meshes(output_path, margin=1, pixel_density=100, 
     render.image_settings.file_format = 'PNG'
     render.film_transparent = True
     scene.render.engine = 'CYCLES'
-    scene.cycles.device = 'GPU'
     scene.cycles.samples = 16
     scene.cycles.preview_samples = 8
     scene.cycles.use_denoising = True
+    _configure_cycles_device(scene)
 
     bpy.ops.render.render(write_still=True)
 

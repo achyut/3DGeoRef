@@ -67,6 +67,10 @@ class PipelineProcessor:
         # Optional API key override from CLI args
         if getattr(self.args, "gemini_api_key", None):
             os.environ["GEMINI_API_KEY"] = self.args.gemini_api_key
+        if getattr(self.args, "openrouter_api_key", None):
+            os.environ["OPENROUTER_API_KEY"] = self.args.openrouter_api_key
+        if getattr(self.args, "ai_gateway_api_key", None):
+            os.environ["AI_GATEWAY_API_KEY"] = self.args.ai_gateway_api_key
         if getattr(self.args, "mapbox_api_key", None):
             os.environ["MAPBOX_API_KEY"] = self.args.mapbox_api_key
 
@@ -201,14 +205,31 @@ class PipelineProcessor:
             logger.error(f"❌ top_view.png not found at: {top_view_path}")
             return None
 
-        logger.info("📏 [Step 2a] Estimating scene dimension via Gemini...")
+        geoloc_model = getattr(self.args, "geoloc_model", "gemini").lower()
+        if geoloc_model == "openrouter":
+            provider = "OpenRouter"
+        elif geoloc_model == "vercel":
+            provider = "Vercel AI Gateway"
+        else:
+            provider = "Gemini"
+        logger.info(f"📏 [Step 2a] Estimating scene dimension via {provider}...")
         try:
-            from pipeline.geolocation.gemini import GeminiDimensionEstimator
-            estimator = GeminiDimensionEstimator(model_name=self.args.gemini_model)
+            if geoloc_model == "openrouter":
+                from pipeline.geolocation.openrouter import OpenRouterDimensionEstimator
+                model_name = getattr(self.args, "openrouter_model", "google/gemini-2.5-flash")
+                estimator = OpenRouterDimensionEstimator(model_name=model_name)
+            elif geoloc_model == "vercel":
+                from pipeline.geolocation.vercel_gateway import VercelGatewayDimensionEstimator
+                model_name = getattr(self.args, "ai_gateway_model", "openai/gpt-4o-mini")
+                estimator = VercelGatewayDimensionEstimator(model_name=model_name)
+            else:
+                from pipeline.geolocation.gemini import GeminiDimensionEstimator
+                estimator = GeminiDimensionEstimator(model_name=self.args.gemini_model)
+
             dimension = estimator.estimate_dimension(top_view_path)
 
             if dimension is None:
-                logger.error("❌ Gemini returned no dimension estimate.")
+                logger.error(f"❌ {provider} returned no dimension estimate.")
                 return None
 
             logger.info(f"✅ Estimated scene width: {dimension:.2f} m")
@@ -396,6 +417,20 @@ class PipelineProcessor:
                 from pipeline.geolocation.ollama import ImageToCoordinates
 
                 geolocator = ImageToCoordinates(ollama_model="llama3.2-vision")
+                most_common, predictions = geolocator.run_pipeline(self.working_dir)
+
+            elif geoloc_model == "openrouter":
+                from pipeline.geolocation.openrouter import OpenRouterGeolocator
+
+                model_name = getattr(self.args, "openrouter_model", "google/gemini-2.5-flash")
+                geolocator = OpenRouterGeolocator(model_name=model_name)
+                most_common, predictions = geolocator.run_pipeline(self.working_dir)
+
+            elif geoloc_model == "vercel":
+                from pipeline.geolocation.vercel_gateway import VercelGatewayGeolocator
+
+                model_name = getattr(self.args, "ai_gateway_model", "openai/gpt-4o-mini")
+                geolocator = VercelGatewayGeolocator(model_name=model_name)
                 most_common, predictions = geolocator.run_pipeline(self.working_dir)
 
             else:

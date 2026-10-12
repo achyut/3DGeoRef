@@ -7,6 +7,8 @@ from images using different AI models and approaches.
 Available Models:
 - GeoCLIP: Fast, vision-based geolocation (pipeline.geolocation.geoclip)
 - Gemini AI: Google's Gemini model for detailed analysis (pipeline.geolocation.gemini)
+- OpenRouter: OpenRouter vision models (pipeline.geolocation.openrouter)
+- Vercel AI Gateway: Vercel vision models (pipeline.geolocation.vercel_gateway)
 - Ollama: Local LLM-based geolocation (pipeline.geolocation.ollama)
 
 Note: These modules are NOT imported automatically to save memory.
@@ -14,6 +16,8 @@ Note: These modules are NOT imported automatically to save memory.
       
       from pipeline.geolocation.geoclip import GeoClipBatchPredictor
       from pipeline.geolocation.gemini import GeminiGeolocator
+      from pipeline.geolocation.openrouter import OpenRouterGeolocator
+      from pipeline.geolocation.vercel_gateway import VercelGatewayGeolocator
       from pipeline.geolocation.ollama import ImageToCoordinates
 """
 
@@ -21,5 +25,7 @@ Note: These modules are NOT imported automatically to save memory.
 __all__ = [
     'GeoClipBatchPredictor',
     'GeminiGeolocator',
+    'OpenRouterGeolocator',
+    'VercelGatewayGeolocator',
     'ImageToCoordinates',
 ]

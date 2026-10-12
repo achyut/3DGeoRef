@@ -48,7 +48,7 @@ class DinoImageMatcher:
             downscale_factor: Factor to downscale images before processing (1.0 = no scaling).
             scales: List of scales to try for the template image.
             rotations: List of rotation angles (degrees) to try for the template.
-            device: Torch device ('cuda' or 'cpu'). Auto-detected if None.
+            device: Torch device ('cuda', 'mps', or 'cpu'). Auto-detected if None.
         """
         if downscale_factor <= 0:
             raise ValueError("downscale_factor must be positive.")
@@ -57,7 +57,14 @@ class DinoImageMatcher:
         self.downscale_factor = downscale_factor
         self.scales = scales if scales is not None else self.DEFAULT_SCALES
         self.rotations = rotations if rotations is not None else self.DEFAULT_ROTATIONS
-        self.device = device if device else ("cuda" if torch.cuda.is_available() else "cpu")
+        if device:
+            self.device = device
+        elif torch.cuda.is_available():
+            self.device = "cuda"
+        elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+            self.device = "mps"
+        else:
+            self.device = "cpu"
 
         self._model = None
         self._processor = None # Only used for DINOv3
